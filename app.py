@@ -341,6 +341,7 @@ if fetch_btn and gemini_key:
             st.session_state["_last_debug_log"] = raw_data.get("_debug_log")
             profile = parse_apify_profile(raw_data["data"])
             st.session_state["profile"] = profile
+            st.session_state.messages = []
             system_prompt = f"""You are an expert recruiter assistant analyzing this LinkedIn profile:
 
 Name: {profile['full_name']}
@@ -425,12 +426,12 @@ if "profile" in st.session_state:
         top_skills = profile["top_skills"]
         if isinstance(top_skills, list):
             badges_html = "".join(
-                f"<span style='background:#e0e0e0;border-radius:12px;padding:3px 10px;margin:2px;display:inline-block;font-size:0.85em'>{s}</span>"
+                f"<span style='background:#e0e0e0;color:#000;border-radius:12px;padding:3px 10px;margin:2px;display:inline-block;font-size:0.85em'>{s}</span>"
                 for s in top_skills if s
             )
             st.markdown(badges_html, unsafe_allow_html=True)
         elif isinstance(top_skills, str):
-            st.markdown(f"<span style='background:#e0e0e0;border-radius:12px;padding:3px 10px;margin:2px;display:inline-block;font-size:0.85em'>{top_skills}</span>", unsafe_allow_html=True)
+            st.markdown(f"<span style='background:#e0e0e0;color:#000;border-radius:12px;padding:3px 10px;margin:2px;display:inline-block;font-size:0.85em'>{top_skills}</span>", unsafe_allow_html=True)
 
     # --- EXPERIENCE ---
     if profile.get("experience"):
@@ -509,7 +510,7 @@ if "profile" in st.session_state:
         st.subheader("Skills")
         with st.expander("View All Skills"):
             skills_html = "".join(
-                f"<span style='background:#e0e0e0;border-radius:12px;padding:3px 10px;margin:2px;display:inline-block;font-size:0.85em'>{s}</span>"
+                f"<span style='background:#e0e0e0;color:#000;border-radius:12px;padding:3px 10px;margin:2px;display:inline-block;font-size:0.85em'>{s}</span>"
                 for s in profile["skills"] if s
             )
             st.markdown(skills_html, unsafe_allow_html=True)
