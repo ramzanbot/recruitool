@@ -32,7 +32,7 @@ with st.sidebar:
     candidates = get_all_candidates()
     if candidates:
         for c in candidates:
-            label = c["full_name"] or c["linkedin_url"]
+            label = c["full_name"] or c["linkedin_url"] or f"Candidate #{c['id']}"
             if st.button(label, key=f"load_{c['id']}", use_container_width=True):
                 loaded = get_candidate_by_id(c["id"])
                 if loaded:
