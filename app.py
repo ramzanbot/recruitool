@@ -1,313 +1,12 @@
 import json
-import os
-import datetime
-import requests
+
 import streamlit as st
-from langchain_core.messages import SystemMessage, HumanMessage
-from langchain_google_genai import ChatGoogleGenerativeAI
 
-DEBUG_LOG_DIR = "debug_logs"
-
-def _log_api_call(endpoint: str, request_body: dict, response, label: str = ""):
-    """Save the raw API request and response to a timestamped JSON file for debugging."""
-    os.makedirs(DEBUG_LOG_DIR, exist_ok=True)
-    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    filename = f"{timestamp}_{label}.json" if label else f"{timestamp}_api_call.json"
-    filepath = os.path.join(DEBUG_LOG_DIR, filename)
-
-    try:
-        response_body = response.json()
-    except Exception:
-        response_body = {"_raw_text": response.text[:10000]}
-
-    log_entry = {
-        "timestamp": datetime.datetime.now().isoformat(),
-        "endpoint": endpoint,
-        "status_code": response.status_code,
-        "request_body": request_body,
-        "response_body": response_body,
-        "response_headers": dict(response.headers),
-    }
-    with open(filepath, "w", encoding="utf-8") as f:
-        json.dump(log_entry, f, indent=2, ensure_ascii=False, default=str)
-    return filepath, log_entry
-
-
-def scrape_with_apify(url: str):
-    url = url.strip()
-    if "linkedin.com/in/" not in url:
-        st.error("Invalid URL: must be a LinkedIn profile URL containing 'linkedin.com/in/'.")
-        return {"status": "error", "data": []}
-
-    token = st.secrets.get("APIFY_KEY")
-    if not token:
-        st.error("Apify API key is missing. Add APIFY_KEY to your secrets.")
-        return {"status": "error", "data": []}
-
-    endpoint = "https://api.apify.com/v2/acts/harvestapi~linkedin-profile-scraper/run-sync-get-dataset-items"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-    }
-    body = {
-        "profileScraperMode": "Profile details no email ($4 per 1k)",
-        "queries": [url],
-    }
-
-    try:
-        response = requests.post(endpoint, headers=headers, json=body, timeout=300)
-        log_path, log_entry = _log_api_call(endpoint, body, response, label="apify_scrape")
-
-        if response.status_code == 429:
-            st.error("Rate limit hit. Please wait a moment and try again.")
-            st.session_state["_last_debug_log"] = log_path
-            st.session_state["_last_debug_entry"] = log_entry
-            return {"status": "error", "data": []}
-
-        if response.status_code == 404:
-            st.error("Apify actor not found. Please check the actor ID.")
-            st.session_state["_last_debug_log"] = log_path
-            st.session_state["_last_debug_entry"] = log_entry
-            return {"status": "error", "data": []}
-
-        if response.status_code not in (200, 201):
-            st.error(f"Apify Error {response.status_code}: {response.text}")
-            st.session_state["_last_debug_log"] = log_path
-            st.session_state["_last_debug_entry"] = log_entry
-            return {"status": "error", "data": []}
-
-        items = response.json()
-        if not items:
-            st.warning("Apify returned empty results for this profile.")
-            return {"status": "complete", "data": [], "_debug_log": log_path}
-
-        return {"status": "complete", "data": items, "_debug_log": log_path}
-
-    except requests.exceptions.Timeout:
-        st.error("Request timed out after 300 seconds. Apify may be overloaded — try again later.")
-        return {"status": "error", "data": []}
-    except Exception as e:
-        st.error(f"Request failed: {e}")
-        return {"status": "error", "data": []}
-    
-def format_experience(experience: list) -> str:
-    if not experience:
-        return "None listed"
-    lines = []
-    for exp in experience:
-        position = exp.get("position") or "Unknown Position"
-        company = exp.get("company_name") or "Unknown Company"
-        duration = exp.get("duration") or ""
-        line = f"- {position} at {company}"
-        if duration:
-            line += f" ({duration})"
-        lines.append(line)
-    return "\n".join(lines)
-
-
-def format_education(education: list) -> str:
-    if not education:
-        return "None listed"
-    lines = []
-    for edu in education:
-        degree = edu.get("degree") or "Unknown Degree"
-        institution = edu.get("institution") or "Unknown Institution"
-        period = edu.get("period") or ""
-        line = f"- {degree} from {institution}"
-        if period:
-            line += f" ({period})"
-        lines.append(line)
-    return "\n".join(lines)
-
-
-def format_languages(languages: list) -> str:
-    if not languages:
-        return "None listed"
-    parts = []
-    for lang in languages:
-        if isinstance(lang, dict):
-            name = lang.get("language") or "Unknown"
-            proficiency = lang.get("proficiency")
-            if proficiency:
-                parts.append(f"{name} ({proficiency})")
-            else:
-                parts.append(name)
-    return ", ".join(parts) if parts else "None listed"
-
-
-def format_certifications(certifications: list) -> str:
-    if not certifications:
-        return "None listed"
-    parts = []
-    for cert in certifications:
-        if isinstance(cert, dict):
-            title = cert.get("title") or "Unknown"
-            parts.append(title)
-    return ", ".join(parts) if parts else "None listed"
-
-
-def parse_apify_profile(raw_items: list) -> dict:
-    """Transform a rich structured Apify response into a flat dict."""
-    if not raw_items or not isinstance(raw_items, list):
-        return None
-
-    item = raw_items[0]
-    if not isinstance(item, dict):
-        return None
-
-    element = item.get("element") if isinstance(item.get("element"), dict) else item
-    if not element or not isinstance(element, dict):
-        return None
-
-    first_name = element.get("firstName")
-    last_name = element.get("lastName")
-    full_name = f"{first_name or ''} {last_name or ''}".strip() or None
-
-    location = element.get("location") or {}
-    location_text = location.get("linkedinText")
-    country_code = location.get("countryCode")
-    parsed_loc = location.get("parsed") or {}
-    location_city = parsed_loc.get("city")
-    location_state = parsed_loc.get("state")
-    location_country = parsed_loc.get("countryFull")
-    if not location_text:
-        location_text = element.get("geoLocationName")
-
-    current_positions = element.get("currentPosition") or []
-    current_company = None
-    if isinstance(current_positions, list) and current_positions:
-        current_company = current_positions[0].get("companyName")
-
-    experience_raw = element.get("experience") or []
-    experience = []
-    if isinstance(experience_raw, list):
-        for exp in experience_raw:
-            if not isinstance(exp, dict):
-                continue
-            start_date = exp.get("startDate") or {}
-            end_date = exp.get("endDate") or {}
-            experience.append({
-                "position": exp.get("position"),
-                "company_name": exp.get("companyName"),
-                "description": exp.get("description"),
-                "duration": exp.get("duration"),
-                "employment_type": exp.get("employmentType"),
-                "start_date_text": start_date.get("text") if isinstance(start_date, dict) else None,
-                "end_date_text": end_date.get("text") if isinstance(end_date, dict) else None,
-                "location": exp.get("location"),
-                "company_linkedin_url": exp.get("companyLinkedinUrl"),
-            })
-
-    education_raw = element.get("education") or []
-    education = []
-    if isinstance(education_raw, list):
-        for edu in education_raw:
-            if not isinstance(edu, dict):
-                continue
-            start_date = edu.get("startDate") or {}
-            end_date = edu.get("endDate") or {}
-            education.append({
-                "institution": edu.get("title") or edu.get("schoolName"),
-                "degree": edu.get("degree") or edu.get("degreeName"),
-                "period": edu.get("period"),
-                "start_date_text": start_date.get("text") if isinstance(start_date, dict) else None,
-                "end_date_text": end_date.get("text") if isinstance(end_date, dict) else None,
-                "link": edu.get("link") or edu.get("schoolLinkedinUrl"),
-            })
-
-    certifications_raw = element.get("certifications") or []
-    certifications = []
-    if isinstance(certifications_raw, list):
-        for cert in certifications_raw:
-            if not isinstance(cert, dict):
-                continue
-            issued_at = cert.get("issuedAt") or {}
-            certifications.append({
-                "title": cert.get("title"),
-                "issued_at": issued_at.get("text") if isinstance(issued_at, dict) else None,
-                "issued_by": cert.get("issuedBy"),
-                "issued_by_link": cert.get("issuedByLink"),
-            })
-
-    skills_raw = element.get("skills") or []
-    skills = []
-    if isinstance(skills_raw, list):
-        for skill in skills_raw:
-            if isinstance(skill, dict):
-                name = skill.get("name")
-                if name:
-                    skills.append(name)
-
-    languages_raw = element.get("languages") or []
-    languages = []
-    if isinstance(languages_raw, list):
-        for lang in languages_raw:
-            if isinstance(lang, dict):
-                languages.append({
-                    "language": lang.get("language"),
-                    "proficiency": lang.get("proficiency"),
-                })
-
-    projects_raw = element.get("projects") or []
-    projects = []
-    if isinstance(projects_raw, list):
-        for proj in projects_raw:
-            if not isinstance(proj, dict):
-                continue
-            start_date = proj.get("startDate") or {}
-            end_date = proj.get("endDate") or {}
-            projects.append({
-                "title": proj.get("title"),
-                "description": proj.get("description"),
-                "duration": proj.get("duration"),
-                "start_date_text": start_date.get("text") if isinstance(start_date, dict) else None,
-                "end_date_text": end_date.get("text") if isinstance(end_date, dict) else None,
-            })
-
-    publications_raw = element.get("publications") or []
-    publications = []
-    if isinstance(publications_raw, list):
-        for pub in publications_raw:
-            if not isinstance(pub, dict):
-                continue
-            published_at = pub.get("publishedAt") or {}
-            publications.append({
-                "title": pub.get("title"),
-                "published_at": published_at.get("text") if isinstance(published_at, dict) else None,
-                "link": pub.get("link"),
-            })
-
-    return {
-        "first_name": first_name,
-        "last_name": last_name,
-        "full_name": full_name,
-        "headline": element.get("headline"),
-        "about": element.get("about"),
-        "photo": element.get("photo") or (element.get("profilePicture") or {}).get("url"),
-        "linkedin_url": element.get("linkedinUrl"),
-        "location_text": location_text,
-        "location_city": location_city,
-        "location_state": location_state,
-        "location_country": location_country,
-        "country_code": country_code,
-        "current_company": current_company,
-        "connections_count": element.get("connectionsCount"),
-        "follower_count": element.get("followerCount"),
-        "open_to_work": element.get("openToWork"),
-        "hiring": element.get("hiring"),
-        "verified": element.get("verified"),
-        "top_skills": element.get("topSkills"),
-        "websites": element.get("websites") or [],
-        "registered_at": element.get("registeredAt"),
-        "experience": experience,
-        "education": education,
-        "certifications": certifications,
-        "skills": skills,
-        "languages": languages,
-        "projects": projects,
-        "publications": publications,
-        "received_recommendations": element.get("receivedRecommendations") or [],
-    }
+from chat import build_system_prompt, generate_chat_response, get_chat_llm
+from database import get_all_candidates, get_candidate_by_id, save_candidate
+from parser import parse_apify_profile
+from scorer import score_candidate
+from scraper import scrape_with_apify
 
 # --- STREAMLIT UI START ---
 st.set_page_config(page_title="Recruiter AI", layout="wide")
@@ -328,6 +27,24 @@ with st.sidebar:
 
     fetch_btn = st.button("🚀 Fetch Profile")
 
+    st.divider()
+    st.subheader("Saved Candidates")
+    candidates = get_all_candidates()
+    if candidates:
+        for c in candidates:
+            label = c["full_name"] or c["linkedin_url"]
+            if st.button(label, key=f"load_{c['id']}", use_container_width=True):
+                loaded = get_candidate_by_id(c["id"])
+                if loaded:
+                    st.session_state["profile"] = loaded
+                    st.session_state["apify_items"] = loaded.get("raw_data") or []
+                    st.session_state.messages = []
+                    system_prompt = build_system_prompt(loaded)
+                    st.session_state["system_prompt"] = system_prompt
+                    st.rerun()
+    else:
+        st.caption("No candidates saved yet.")
+
 # 2. Main Area: Data & Chat
 if fetch_btn and gemini_key:
     if "APIFY_KEY" not in st.secrets:
@@ -342,26 +59,10 @@ if fetch_btn and gemini_key:
             profile = parse_apify_profile(raw_data["data"])
             st.session_state["profile"] = profile
             st.session_state.messages = []
-            system_prompt = f"""You are an expert recruiter assistant analyzing this LinkedIn profile:
-
-Name: {profile['full_name']}
-Headline: {profile['headline']}
-About: {profile['about']}
-Current Company: {profile['current_company']}
-Location: {profile['location_text']}
-
-Experience:
-{format_experience(profile['experience'])}
-
-Education:
-{format_education(profile['education'])}
-
-Skills: {', '.join(profile['skills']) if profile['skills'] else 'None listed'}
-Languages: {format_languages(profile['languages'])}
-Certifications: {format_certifications(profile['certifications'])}
-
-Answer questions about this candidate specifically. Reference their actual experience, skills, and achievements. Be specific and actionable."""
+            system_prompt = build_system_prompt(profile)
             st.session_state["system_prompt"] = system_prompt
+            if not raw_data.get("_from_cache"):
+                save_candidate(profile, raw_data.get("data"))
             st.success("Profile loaded successfully!")
 
 # 3. Persistent View (Data + Chat)
@@ -583,55 +284,9 @@ if "profile" in st.session_state:
             st.warning("Please paste a job description first.")
         else:
             with st.spinner("Scoring candidate..."):
-                scoring_prompt = f"""You are a recruiting analyst. Score this candidate against the job description on a scale of 1-10 for each dimension, then give an overall score out of 100.
-
-CANDIDATE PROFILE:
-Name: {profile['full_name']}
-Current Role: {profile['headline']}
-Current Company: {profile['current_company']}
-Location: {profile['location_text']}
-
-Experience: {format_experience(profile['experience'])}
-Education: {format_education(profile['education'])}
-Skills: {', '.join(profile['skills']) if profile['skills'] else 'None'}
-Languages: {format_languages(profile['languages'])}
-Certifications: {format_certifications(profile['certifications'])}
-
-JOB DESCRIPTION:
-{jd_text}
-
-Return ONLY a JSON object (no markdown, no code fences) with:
-{{
-  "overall_score": <1-100>,
-  "dimensions": {{
-    "experience_match": <1-10>,
-    "skills_match": <1-10>,
-    "education_match": <1-10>,
-    "location_match": <1-10>
-  }},
-  "summary": "<2-3 sentence explanation>",
-  "key_matches": ["<match 1>", "<match 2>", ...],
-  "potential_gaps": ["<gap 1>", "<gap 2>", ...]
-}}"""
-
                 try:
-                    scoring_llm = ChatGoogleGenerativeAI(
-                        google_api_key=gemini_key, model="gemini-2.5-flash-lite"
-                    )
-                    response = scoring_llm.invoke(scoring_prompt)
-                    raw_response = response.content.strip()
-
-                    # Strip code fences if present
-                    if raw_response.startswith("```"):
-                        raw_response = raw_response.split("\n", 1)[1] if "\n" in raw_response else raw_response[3:]
-                        if raw_response.endswith("```"):
-                            raw_response = raw_response[:-3]
-                        raw_response = raw_response.strip()
-                        if raw_response.lower().startswith("json"):
-                            raw_response = raw_response[4:].strip()
-
                     try:
-                        score_result = json.loads(raw_response)
+                        score_result = score_candidate(gemini_key, profile, jd_text)
                         st.session_state["score_result"] = score_result
                         st.session_state["job_description_text"] = jd_text
                         st.session_state["job_description"] = jd_text
@@ -640,9 +295,9 @@ Return ONLY a JSON object (no markdown, no code fences) with:
                             st.session_state["system_prompt"] + "\n\nJOB CONTEXT:\n" + jd_text
                         )
                         st.rerun()
-                    except json.JSONDecodeError:
+                    except json.JSONDecodeError as e:
                         st.error("LLM returned malformed JSON. Raw response:")
-                        st.code(raw_response, language="text")
+                        st.code(e.doc, language="text")
                 except Exception as e:
                     st.error(f"Scoring failed: {e}")
 
@@ -685,7 +340,7 @@ Return ONLY a JSON object (no markdown, no code fences) with:
     full_name = profile.get("full_name") or "Candidate"
     st.subheader(f"Chat with {full_name}")
 
-    llm = ChatGoogleGenerativeAI(google_api_key=gemini_key, model="gemini-2.5-flash-lite")
+    llm = get_chat_llm(gemini_key)
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -720,11 +375,9 @@ Return ONLY a JSON object (no markdown, no code fences) with:
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
                 try:
-                    response = llm.invoke([
-                        SystemMessage(content=st.session_state["system_prompt"]),
-                        HumanMessage(content=user_prompt),
-                    ])
-                    output_text = response.content
+                    output_text = generate_chat_response(
+                        llm, st.session_state["system_prompt"], user_prompt
+                    )
                     st.markdown(output_text)
                     st.session_state.messages.append({"role": "assistant", "content": output_text})
                 except Exception as e:

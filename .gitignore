@@ -11,5 +11,6 @@ wheels/
 .env
 .streamlit
 debug_logs/
+*.db
 .sisyphus
 .playwright-mcp
